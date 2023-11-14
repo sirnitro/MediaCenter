@@ -1,0 +1,134 @@
+## STATIC CONFIGURATION
+log:
+  level: DEBUG
+
+api:
+  insecure: true
+  dashboard: true
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+  vnc:
+   address: ":5900"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+  file:
+    filename: "traefik.yml"
+
+certificatesResolvers:
+  lets-encr:
+    acme:
+      #caServer: https://acme-staging-v02.api.letsencrypt.org/directory
+      email: yourcloudflare-email
+      storage: acme.json
+      dnsChallenge:
+        provider: cloudflare
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"
+
+## DYNAMIC CONFIGURATION
+http:
+  routers:
+    route-to-plex:
+      rule: "Host(`plex.$MYDOMAIN`)"
+      service: plex-svc
+      priority: 1000
+      entryPoints:
+        - web
+    route-to-hoass:
+      rule: "Host(`ha.$MYDOMAIN`)"
+      service: hoass-svc
+      priority: 1000
+      entryPoints:
+        - web
+    route-to-oversee:
+      rule: "Host(`overseer.$MYDOMAIN`)"
+      service: oversee-svc
+      priority: 1000
+      entryPoints:
+        - web 
+    route-to-prox1:
+      rule: "Host(`prox1.$MYDOMAIN`)"
+      service: prox1-svc
+      priority: 1000
+      entryPoints:
+        - web
+    route-to-prox2:
+      rule: "Host(`prox2.$MYDOMAIN`)"
+      service: prox2-svc
+      priority: 1000
+      entryPoints:
+        - web
+    route-to-octo:
+      rule: "Host(`octo.$MYDOMAIN`)"
+      service: octo-svc
+      priority: 1000
+      entryPoints:
+        - web
+    route-to-taut:
+      rule: "Host(`tautulli.$MYDOMAIN`)"
+      service: taut-svc
+      priority: 1000
+      entryPoints:
+        - web
+    route-to-guard:
+      rule: "Host(`guard.$MYDOMAIN`)"
+      service: guard-svc
+      priority: 1000
+      entryPoints:
+        - web
+
+  services:
+    plex-svc:
+      loadBalancer:
+        servers:
+          - url: "http://10.10.10.1:32400"
+    hoass-svc:
+      loadBalancer:
+        servers:
+          - url: "http://10.10.10.26:8123"
+    oversee-svc:
+      loadBalancer:
+        servers:
+          - url: "http://10.10.10.1:5302"
+    prox1-svc:
+      loadBalancer:
+        servers:
+          - url: "https://10.10.10.249:8006"
+    prox2-svc:
+      loadBalancer:
+        servers:
+          - url: "https://10.10.10.248:8006"
+    octo-svc:
+      loadBalancer:
+        servers:
+          - url: "http://10.10.10.75"
+    taut-svc:
+      loadBalancer:
+        servers:
+          - url: "http://10.10.10.1:5308"
+    guard-svc:
+      loadBalancer:
+        servers:
+          - url: "http://10.10.10.254"
+
+tcp:
+  routers:
+    route-to-gamer:
+      rule: "HostSNI(`gamer.$MYDOMAIN`)"
+      service: gamer-svc
+      tls: {}
+      entryPoints:
+        - vnc
+  services:
+    gamer-svc:
+      loadBalancer:
+        servers:
+          - address: "10.10.10.252:5900"
