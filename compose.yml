@@ -40,293 +40,367 @@ x-common-keys-media: &common-keys-media
   restart: unless-stopped
 
 services:
-  portainer:
-    <<: *common-keys-core # See EXTENSION FIELDS at the top
-    container_name: portainer
-    image: portainer/portainer-ce:latest
-    command: -H unix:///var/run/docker.sock # Use Docker Socket Proxy and comment this line out, for improved security.
-    # command: -H tcp://socket-proxy:2375 # Use this instead, if you have Socket Proxy enabled.
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    env_file:
+      - .env 
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - /docker/appdata/traefik/rules:/rules # file provider directory
+      - /docker/appdata/traefik/config:/config # file provider directory
+      - /var/run/docker.sock:/var/run/docker.sock:ro # If you use Docker Socket Proxy, comment this line out
+      - /docker/appdata/traefik/acme/acme.json:/acme.json # cert location - you must create this empty file and change permissions to 600
+      - /docker/logs:/logs # for fail2ban or crowdsec
+      - /docker/share:/shared
+      - /docker/appdata/traefik/config/traefik.yml:/traefik.yml:ro
+      - "/etc/localtime:/etc/localtime:ro"
+    labels:
+      ### Setup Console Access
+      - "traefik.http.routers.traefik.rule=Host(\"atc.$DOMAIN\")"
+      - "traefik.http.routers.traefik.middlewares=traefik-auth"
+      - "traefik.http.routers.traefik.service=traefik-svc"
+      - "traefik.http.middlewares.traefik-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.traefik-auth.basicauth.realm=Hello!"
+      - "traefik.http.services.traefik-svc.loadbalancer.server.port=8080"
+      ### DNS CHALLENGE
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.tls.certresolver=lets-encr"
+      - "traefik.http.routers.traefik.tls.domains[0].main=*.$DOMAIN"
+      - "traefik.http.routers.traefik.tls.domains[0].sans=$DOMAIN"
+      ### HTTP REDIRECT
+#      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+#      - "traefik.http.routers.redirect-https.rule=hostregexp(`{host:.+}`)"
+#      - "traefik.http.routers.redirect-https.entrypoints=web"
+#      - "traefik.http.routers.redirect-https.middlewares=redirect-to-https"
     networks:
-       traf:
-         ipv4_address: 10.1.1.254
+      - default
+      - traf
+
+  whoami:
+    # A container that exposes an API to show its IP address
+    image: traefik/whoami
+    restart: unless-stopped
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=portainer"
-      - "traefik.frontend.rule=Host:port.YOURDOMAIN"
-      - "traefik.port=9000"
-      - "traefik.http.routers.traefik-rtr.middlewares=middlewares-basic-auth@file"
+      - "traefik.http.routers.whoami.entrypoints=websecure"
+      - "traefik.http.routers.whoami.rule=Host(`whoami.$DOMAIN`)"
+      - "traefik.http.routers.whoami.tls.certresolver=lets-encr"
+      - "traefil.http.routers.whoami.tls.domains[0].main=whoami.$DOMAIN"
+      - "traefik.http.routers.whoami.middlewares=whoami-auth"
+      - "traefik.http.middlewares.whoami-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.whoami-auth.basicauth.realm=Hello!"
 
-    ports: # Comment out if using Nginx Proxy Manager to access portainer WebUI.
-      - "5300:9000"
+  portainer:
+    <<: *common-keys-media 
+    container_name: portainer
+    image:  portainer/portainer-ce:latest
+    command: -H unix:///var/run/docker.sock
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.port.rule=Host(\"port.$DOMAIN\")"
+      - "traefik.http.routers.port.middlewares=port-auth"
+      - "traefik.http.middlewares.port-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.port-auth.basicauth.realm=Hello!"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro # Use Docker Socket Proxy and comment this line out, for improved security.
       - $DOCKERDIR/appdata/portainer/data:/data # Change to local directory if you want to save/transfer config locally.
+      - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - "5300:9000"
     environment:
-      - TZ=$TZ
+      <<: *default-tz-puid-pgid
 
-## STARR APPS
   homarr:
-    <<: *common-keys-media # See EXTENSION FIELDS at the top
+    <<: *common-keys-media
     image: ghcr.io/ajnart/homarr:latest
     container_name: homarr
-    networks:
-      traf:
-        ipv4_address: 10.1.1.101
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=homarr"
-      - "traefik.frontend.rule=Host:homarr.YOURDOMAIN"
-      - "traefik.port=7575"
-    ports:
-      - "5301:7575"
+      - "traefik.http.routers.whoami.tls.certresolver=lets-encr"
+      - "traefil.http.routers.whoami.tls.domains[0].main=whoami.$DOMAIN"
+
+      - "traefik.http.routers.homarr.rule=Host(\"homarr.$DOMAIN\")"
+      - "traefik.http.routers.homarr.middlewares=homarr-auth"
+      - "traefik.http.middlewares.homarr-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.homarr-auth.basicauth.realm=Hello!"
     volumes:
-      - $DOCKERDIR/appdata/homarr:/config
+      - $DOCKERDIR/appdata/homarr/configs:/app/data/configs
+      - $DOCKERDIR/appdata/homarr/data:/data
+      - $DOCKERDIR/appdata/homarr/icons:/app/public/icons
       - $DATADIR/downloads:/data/downloads
       - $DATADIR/media:/data/media
       - $DATA2DIR/share:/tank
       - "/etc/localtime:/etc/localtime:ro"
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "5301:7575"
     environment:
       <<: *default-tz-puid-pgid
 
   radarr:
-    <<: *common-keys-media # See EXTENSION FIELDS at the top
-    image: lscr.io/linuxserver/radarr:nightly # latest tag was causing "Error parsing column 45"
+    <<: *common-keys-media
+    image: lscr.io/linuxserver/radarr:nightly
     container_name: radarr
-    networks:
-      traf:
-        ipv4_address: 10.1.1.102
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=radarr"
-      - "traefik.frontend.rule=Host:radarr.YOURDOMAIN"
-      - "traefik.port=7878"
-    ports:
-      - "5302:7878"
+#      - "traefik.http.routers.radarr.tls.certresolver=lets-encr"
+#      - "traefil.http.routers.radarr.tls.domains[0].main=radarr.$DOMAIN"
+
+      - "traefik.http.routers.radarr.rule=Host(\"radarr.$DOMAIN\")"
+      - "traefik.http.routers.radarr.middlewares=radarr-auth"
+      - "traefik.http.middlewares.radarr-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.radarr-auth.basicauth.realm=Hello!"
     volumes:
       - $DOCKERDIR/appdata/radarr:/config
       - $DATADIR/downloads:/data/downloads
       - $DATADIR/media:/data/media
       - $DATA2DIR/share:/tank
       - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - "5302:7878"
     environment:
       <<: *default-tz-puid-pgid
+
   sonarr:
-    <<: *common-keys-media # See EXTENSION FIELDS at the top
+    <<: *common-keys-media
     image: lscr.io/linuxserver/sonarr
     container_name: sonarr
-    networks:
-      traf:
-        ipv4_address: 10.1.1.103
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=sonarr"
-      - "traefik.frontend.rule=Host:sonarr.YOURDOMAIN"
-      - "traefik.port=8989"
-    ports:
-      - "5303:8989"
+ #     - "traefik.http.routers.sonarr.tls.certresolver=lets-encr"
+ #     - "traefil.http.routers.sonarr.tls.domains[0].main=sonarr.$DOMAIN"
+      - "traefik.http.routers.sonarr.rule=Host(\"sonarr.$DOMAIN\")"
+      - "traefik.http.routers.sonarr.middlewares=sonarr-auth"
+      - "traefik.http.middlewares.sonarr-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.sonarr-auth.basicauth.realm=Hello!"
     volumes:
       - $DOCKERDIR/appdata/sonarr:/config
       - $DATADIR/downloads:/data/downloads
       - $DATADIR/media:/data/media
       - $DATA2DIR/share:/tank
       - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - "5303:8989"
     environment:
       <<: *default-tz-puid-pgid
+
   lidarr:
-    <<: *common-keys-media # See EXTENSION FIELDS at the top
-    image: lscr.io/linuxserver/lidarr:latest # latest tag was causing "Error parsing column 45"
+    <<: *common-keys-media
+    image: lscr.io/linuxserver/lidarr:latest
     container_name: lidarr
-    networks:
-      traf:
-        ipv4_address: 10.1.1.104
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=lidarr"
-      - "traefik.frontend.rule=Host:lidarr.YOURDOMAIN"
-      - "traefik.port=8686"
-    ports:
-      - "5304:8686"
+  #    - "traefik.http.routers.lidarr.tls.certresolver=lets-encr"
+  #    - "traefil.http.routers.lidarr.tls.domains[0].main=lidarr.$DOMAIN"
+      - "traefik.http.routers.lidarr.rule=Host(\"lidarr.$DOMAIN\")"
+      - "traefik.http.routers.lidarr.middlewares=lidarr-auth"
+      - "traefik.http.middlewares.lidarr-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.lidarr-auth.basicauth.realm=Hello!"
     volumes:
-      - $DOCKERDIR/appdata/lidar:/config
+      - $DOCKERDIR/appdata/lidarr:/config
       - $DATADIR/downloads:/data/downloads
       - $DATADIR/media:/data/media
       - $DATA2DIR/share:/tank
       - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - "5304:8686"
     environment:
       <<: *default-tz-puid-pgid
   prowlarr:
-    <<: *common-keys-media # See EXTENSION FIELDS at the top
+    <<: *common-keys-media
     image: lscr.io/linuxserver/prowlarr:latest
     container_name: prowlarr
-    networks:
-      traf:
-        ipv4_address: 10.1.1.105
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=prowlarr"
-      - "traefik.frontend.rule=Host:prowlarr.YOURDOMAIN"
-      - "traefik.port=9696"
-    ports:
-      - "5305:9696"
+   #   - "traefik.http.routers.prowlarr.tls.certresolver=lets-encr"
+   #   - "traefil.http.routers.prowlarr.tls.domains[0].main=prowlarr.$DOMAIN"
+      - "traefik.http.routers.prowlarr.rule=Host(\"prowlarr.$DOMAIN\")"
+      - "traefik.http.routers.prowlarr.middlewares=prowlarr-auth"
+      - "traefik.http.middlewares.prowlarr-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.prowlarr-auth.basicauth.realm=Hello!"
     volumes:
       - $DOCKERDIR/appdata/prowlarr:/config
       - $DATADIR/downloads:/data/downloads
       - $DATADIR/media:/data/media
       - $DATA2DIR/share:/tank
       - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - "5305:9696"
     environment:
       <<: *default-tz-puid-pgid
   whisparr:
-    <<: *common-keys-media # See EXTENSION FIELDS at the top
+    <<: *common-keys-media
     image: ghcr.io/hotio/whisparr
     container_name: whisparr
-    networks:
-      traf:
-        ipv4_address: 10.1.1.106
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=whisparr"
-      - "traefik.frontend.rule=Host:whisparr.YOURDOMAIN"
-      - "traefik.port=6969"
-    ports:
-      - "5306:6969"
+    #  - "traefik.http.routers.whisparr.tls.certresolver=lets-encr"
+     # - "traefil.http.routers.whisparr.tls.domains[0].main=whisparr.$DOMAIN"
+      - "traefik.http.routers.whisparr.rule=Host(\"whisparr.$DOMAIN\")"
+      - "traefik.http.routers.whisparr.middlewares=whisparr-auth"
+      - "traefik.http.middlewares.whisparr-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.whisparr-auth.basicauth.realm=Hello!"
     volumes:
       - $DOCKERDIR/appdata/whisparr:/config
       - $DATADIR/downloads:/data/downloads
       - $DATADIR/media:/data/media
       - $DATA2DIR/share:/tank
       - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - "5306:6969"
     environment:
       <<: *default-tz-puid-pgid
 
   readarr:
-    <<: *common-keys-media # See EXTENSION FIELDS at the top
-    image: ghcr.io/hotio/readarr
+    <<: *common-keys-media
+    image: lscr.io/linuxserver/readarr:develop
     container_name: readarr
-    networks:
-      traf:
-        ipv4_address: 10.1.1.7
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=readarr"
-      - "traefik.frontend.rule=Host:readarr.YOURDOMAIN"
-      - "traefik.port=8787"
-    ports:
-      - "5307:8787"
+#      - "traefik.http.routers.readarr.tls.certresolver=lets-encr"
+#      - "traefil.http.routers.readarr.tls.domains[0].main=readarr.$DOMAIN"
+      - "traefik.http.routers.readarr.rule=Host(\"readarr.$DOMAIN\")"
+      - "traefik.http.routers.readarr.middlewares=readarr-auth"
+      - "traefik.http.middlewares.readarr-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.readarr-auth.basicauth.realm=Hello!"
     volumes:
       - $DOCKERDIR/appdata/readarr:/config
       - $DATADIR/downloads:/data/downloads
       - $DATADIR/media:/data/media
       - $DATA2DIR/share:/tank
+      - $DATADIR/books:/data/books
       - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - "5307:8787"
     environment:
       <<: *default-tz-puid-pgid
 
-  overseerr:
-    <<: *common-keys-media # See EXTENSION FIELDS at the top
-    image: lscr.io/linuxserver/overseerr:latest
-    container_name: overseerr
-    networks:
-      traf:
-        ipv4_address: 10.1.1.108
+  deluge:
+    <<: *common-keys-media
+    image: lscr.io/linuxserver/deluge:latest
+    container_name: deluge
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=overseerr"
-      - "traefik.frontend.rule=Host:overseerr.YOURDOMAIN"
-      - "traefik.port=5055"
-    ports:
-      - "5308:5055"
+#      - "traefik.http.routers.readarr.tls.certresolver=lets-encr"
+#      - "traefil.http.routers.readarr.tls.domains[0].main=readarr.$DOMAIN"
+      - "traefik.http.routers.deluge.rule=Host(\"deluge.$DOMAIN\")"
+      - "traefik.http.routers.deluge.middlewares=deluge-auth"
+      - "traefik.http.services.deluge.loadbalancer.server.port=8112"
+      - "traefik.http.middlewares.deluge-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.deluge-auth.basicauth.realm=Hello!"
+    environment:
+      <<: *default-tz-puid-pgid
     volumes:
-      - $DOCKERDIR/appdata/overseerr:/config
+      - $DOCKERDIR/appdata/deluge/config:/config
       - $DATADIR/downloads:/data/downloads
       - $DATADIR/media:/data/media
       - $DATA2DIR/share:/tank
+      - $DOCKERDIR/scripts:/scripts
+      - $DOCKERDIR/logs:/logs
       - "/etc/localtime:/etc/localtime:ro"
-    environment:
-      <<: *default-tz-puid-pgid
+    ports:
+      - 8112:8112
+      - 6881:6881
+      - 6881:6881/udp
+    restart: unless-stopped
 
-  transmission:
-    <<: *common-keys-media # See EXTENSION FIELDS at the top
-    image: lscr.io/linuxserver/transmission:latest
-    container_name: transmission
-    networks:
-      traf:
-        ipv4_address: 10.1.1.109
+  overseerr:
+    image: lscr.io/linuxserver/overseerr:develop
+    container_name: overseerr
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=transmission"
-      - "traefik.frontend.rule=Host:trans.YOURDOMAIN"
-      - "traefik.port=9091"
+      - "traefik.http.routers.overseerr.tls.certresolver=lets-encr"
+      - "traefil.http.routers.overseerr.tls.domains[0].main=overseerr.$DOMAIN"
+      - "traefik.http.routers.overseer.rule=Host(\"overseer.$DOMAIN\")"
+      - "traefik.http.routers.overseer.middlewares=overseer-auth"
+      - "traefik.http.middlewares.overseer-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.overseer-auth.basicauth.realm=Hello!"
+    volumes:
+      - $DOCKERDIR/appdata/overseerr:/config
     ports:
-      - "5309:9091"
+      - "5308:5055"
+
+  transmission:
+    <<: *common-keys-media
+    image: lscr.io/linuxserver/transmission:latest
+    container_name: transmission
+    labels:
+      - "traefik.enable=true"
+  #    - "traefik.http.routers.trans.tls.certresolver=lets-encr"
+  #    - "traefil.http.routers.trans.tls.domains[0].main=trans.$DOMAIN"
+      - "traefik.http.routers.trans.rule=Host(\"trans.$DOMAIN\")"
+      - "traefik.http.routers.trans.middlewares=trans-auth"
+      - "traefik.http.middlewares.trans-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.trans-auth.basicauth.realm=Hello!"
     volumes:
       - $DOCKERDIR/appdata/transmission:/config
       - $DATADIR/downloads:/data/downloads
       - $DATADIR/media:/data/media
       - $DATA2DIR/share:/tank
       - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - "5309:9091"
     environment:
-      - USER=$USER
-      - PASS=$PASS
-      - PUID=1003
-      - PGID=1003
-      - TZ=America/Fort_Wayne
-      #<<: *default-tz-puid-pgid
+      - USER=YOURUSERNAME
+      - PASS=YOURPASSWORD
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+
   ombi:
-    <<: *common-keys-core # See EXTENSION FIELDS at the top
+    <<: *common-keys-media
     image: lscr.io/linuxserver/ombi:latest
     container_name: ombi
-    networks:
-      traf:
-        ipv4_address: 10.1.1.110
     labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=ombi"
-      - "traefik.frontend.rule=Host:ombi.YOURDOMAIN"
-      - "traefik.port=3579"
-    ports:
-      - "5310:3579"
+      - "traefik.http.routers.ombi.rule=Host(\"ombi.$DOMAIN\")"
+      - "traefik.http.routers.ombi.middlewares=ombi-auth"
+      - "traefik.http.middlewares.ombi-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.ombi-auth.basicauth.realm=Hello!"
     volumes:
       - $DOCKERDIR/appdata/ombi:/config
-      - "/etc/localtime:/etc/localtime:ro"
+      - $DATADIR/downloads:/data/downloads
+      - $DATADIR/media:/data/media
       - $DATA2DIR/share:/tank
+      - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - "5310:3579"
     environment:
       <<: *default-tz-puid-pgid
 
-##UTILS
   filebrowser:
-    <<: *common-keys-core # See EXTENSION FIELDS at the top
+    <<: *common-keys-media
     image: filebrowser/filebrowser:s6
     container_name: filebrowser
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=files"
-      - "traefik.frontend.rule=Host:files.YOURDOMAIN"
-      - "traefik.port=80"
-    ports:
-      - "5320:80" # 80 and 81 are used by Nginx Proxy Manager
+ #     - "traefik.http.routers.files.tls.certresolver=lets-encr"
+ #     - "traefil.http.routers.files.tls.domains[0].main=files.$DOMAIN"
+      - "traefik.http.routers.filebrowser.rule=Host(\"files.$DOMAIN\")"
+      - "traefik.http.routers.filebrowser.middlewares=filebrowser-auth"
+      - "traefik.http.middlewares.filebrowser-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.filebrowser-auth.basicauth.realm=Hello!"
     volumes:
       - $DOCKERDIR/appdata/filebrowser:/config
       - $DATA2DIR:/srv
+      - $DATADIR:/srv/tank
+      - $DOCKERDIR:/srv/docker
+      - $DOCKERDIR/appdata/filebrowser/data:/database
+      - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - "5320:80"
+    environment:
+      <<: *default-tz-puid-pgid
+
 
   watchtower:
-    <<: *common-keys-core # See EXTENSION FIELDS at the top
     image: containrrr/watchtower
     container_name: watchtower
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock # Use Docker Socket Proxy and comment this line for improved security.
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       TZ: $TZ
       WATCHTOWER_CLEANUP: "true"
@@ -334,19 +408,10 @@ services:
       WATCHTOWER_INCLUDE_STOPPED: "true"
       WATCHTOWER_NO_STARTUP_MESSAGE: "false"
       WATCHTOWER_SCHEDULE: "0 30 12 * * *" # Everyday at 12:30
-    # DOCKER_HOST: tcp://socket-proxy:2375 # Use this if you have Socket Proxy enabled.
       DOCKER_API_VERSION: "1.40"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.backend=watchtower"
-      - "traefik.frontend.rule=Host:watchtower.YOURDOMAIN"
-      - "traefik.port=8080"
-    ports:
-      - "5321:8080"
-
+    
   dockergc:
-    <<: *common-keys-apps # See EXTENSION FIELDS at the top
+    <<: *common-keys-apps
     image: clockworksoul/docker-gc-cron:latest
     container_name: docker-gc
     volumes:
@@ -359,111 +424,82 @@ services:
       DRY_RUN: 0
       CLEAN_UP_VOLUMES: 1
       TZ: $TZ
-    # DOCKER_HOST: tcp://socket-proxy:2375 # Use this if you have Socket Proxy enabled.
 
-# Traefik 2 - Reverse Proxy
-  traefik:
-    container_name: traefik
-    image: traefik:2.10.5
+  calibre:
+    <<: *common-keys-media
+    image: lscr.io/linuxserver/calibre:latest
+    container_name: calibre
     labels:
-     # HTTP-to-HTTPS Redirect
-      - "traefik.http.routers.http-catchall.entrypoints=http"
-      - "traefik.http.routers.http-catchall.rule=HostRegexp(`{host:.+}`)"
-      - "traefik.http.routers.http-catchall.middlewares=redirect-to-https"
-      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
-      # HTTP Routers
-      - "traefik.http.routers.traefik-rtr.entrypoints=https"
-#      - "traefik.http.routers.traefik-rtr.rule=Host(`traefik.$DOMAINNAME_CLOUD_SERVER`)"
-      - "traefik.http.routers.traefik-rtr.tls=true" # Some people had 404s without this
-      - "traefik.http.routers.traefik-rtr.tls.certresolver=dns-cloudflare" # Comment out this line after first run of traefik to force the use of wildcard certs
-      - "traefik.http.routers.traefik-rtr.tls.domains[0].main=$DOMAINNAME_CLOUD_SERVER"
-      - "traefik.http.routers.traefik-rtr.tls.domains[0].sans=*.$DOMAINNAME_CLOUD_SERVER"
-      ## Services - API
-      - "traefik.http.routers.traefik-rtr.service=api@internal"
-      ## Middlewares
-      - "traefik.http.routers.traefik-rtr.middlewares=middlewares-basic-auth@file"
-    command:
-      - --api.insecure=true
-      - --providers.docker
-      - --log=true
-      - --log.filePath=/logs/traefik.log
-      - --log.level=DEBUG # (Default: error) DEBUG, INFO, WARN, ERROR, FATAL, PANIC
-      - --accessLog=true
-      - --accessLog.filePath=/logs/access.log
-      - --accessLog.bufferingSize=100 # Configuring a buffer of 100 lines
-      - --accessLog.filters.statusCodes=204-299,400-499,500-599
-      - --global.checkNewVersion=true
-      - --global.sendAnonymousUsage=true
-      - --entryPoints.http.address=:80
-      - --entryPoints.https.address=:443
-      - --entrypoints.https.forwardedHeaders.trustedIPs=$CLOUDFLARE_IPS,$LOCAL_IPS
-      - --entryPoints.traefik.address=:8080
-      - --api=true
-      - --api.dashboard=true
-      - --providers.docker=true
-      - --providers.docker.endpoint=unix:///var/run/docker.sock # Use Docker Socket Proxy instead for improved security
-      - --providers.docker.exposedByDefault=false
-      - --entrypoints.https.http.tls.options=tls-opts@file
-   # Add dns-cloudflare as default certresolver for all services. Also enables TLS and no need to specify on individual services
-      - --entrypoints.https.http.tls.certresolver=dns-cloudflare
-      - --entrypoints.https.http.tls.domains[0].main=$DOMAINNAME_CLOUD_SERVER
-      - --entrypoints.https.http.tls.domains[0].sans=*.$DOMAINNAME_CLOUD_SERVER
-   # - --entrypoints.https.http.tls.domains[1].main=$DOMAINNAME2 # Pulls main cert for second domain
-   # - --entrypoints.https.http.tls.domains[1].sans=*.$DOMAINNAME2 # Pulls wildcard cert for second domain
-      - --providers.docker.network=t2_proxy
-      - --providers.docker.swarmMode=false
-      - --providers.file.directory=/rules # Load dynamic configuration from one or more .toml or .yml files in a directory
-   # - --providers.file.filename=/path/to/file # Load dynamic configuration from a file
-      - --providers.file.watch=true # Only works on top level files in the rules folder
-      - --certificatesResolvers.dns-cloudflare.acme.caServer=https://acme-staging-v02.api.letsencrypt.org/directory # LetsEncrypt Staging Server - uncomment when testing
-      - --certificatesResolvers.dns-cloudflare.acme.email=$CLOUDFLARE_EMAIL
-      - --certificatesResolvers.dns-cloudflare.acme.storage=/acme.json
-      - --certificatesResolvers.dns-cloudflare.acme.dnsChallenge.provider=cloudflare
-      - --certificatesResolvers.dns-cloudflare.acme.dnsChallenge.resolvers=1.1.1.1:53,1.0.0.1:53
-      - --certificatesResolvers.dns-cloudflare.acme.dnsChallenge.delayBeforeCheck=90 # To delay DNS check and reduce LE hitrate
-    ports:
-      - '80:90'
-      - '8080:8080'
-      - '443:443'
-    volumes:
-      - $DOCKERDIR/appdata/traefik2/rules/cloudserver:/rules # file provider directory
-      - /var/run/docker.sock:/var/run/docker.sock:ro # If you use Docker Socket Proxy, comment this line out
-      - $DOCKERDIR/appdata/traefik2/acme/acme.json:/acme.json # cert location - you must create this empty file and change permissions to 600
-      - $DOCKERDIR/logs/cloudserver/traefik:/logs # for fail2ban or crowdsec
-      - $DOCKERDIR/share:/shared
-
-  authentik-proxy:
-    image: ghcr.io/goauthentik/proxy
-    networks:
-       traf:
-         ipv4_address: 10.1.1.253
-    ports:
-        - 5353:9000
-        - 5354:9443
+      - "traefik.enable=true"
+  #    - "traefik.http.routers.calibre.tls.certresolver=lets-encr"
+  #    - "traefil.http.routers.calibre.tls.domains[0].main=calibre.$DOMAIN"
+      - "traefik.http.routers.calibre.rule=Host(\"calibre.$DOMAIN\")"
+      - "traefik.http.routers.calibre.middlewares=calibre-auth"
+      - "traefik.http.middlewares.calibre-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.calibre-auth.basicauth.realm=Hello!"
+    security_opt:
+      - seccomp:unconfined #optional
     environment:
-        AUTHENTIK_HOST: https://auth.YOURDOMAIN
-        AUTHENTIK_INSECURE: "false"
-        AUTHENTIK_TOKEN: token-generated-by-authentik
-        # Starting with 2021.9, you can optionally set this too
-        # when authentik_host for internal communication doesn't match the public URL
-        # AUTHENTIK_HOST_BROWSER: https://external-domain.tld
-    labels:
-        traefik.enable: true
-        traefik.port: 9000
-        traefik.http.routers.authentik.rule: Host(`app.company`) && PathPrefix(`/outpost.goauthentik.io/`)
-        # `authentik-proxy` refers to the service name in the compose file.
-        traefik.http.middlewares.authentik.forwardauth.address: http://auth.YOURDOMAIN:9000/outpost.goauthentik.io/auth/traefik
-        traefik.http.middlewares.authentik.forwardauth.trustForwardHeader: true
-        traefik.http.middlewares.authentik.forwardauth.authResponseHeaders: X-authentik-username,X-authentik-groups,X-authentik-email,X-authentik-name,X-authentik-uid,X-authentik-jwt,X-authentik-meta-jwks,X-authentik-meta-outpost,X-authentik-meta-provider,X-authentik-meta-app,X-authentik-meta-version
+      - USER=YOURUSERID
+      - PASS=YOURPASSWORD
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - $DOCKERDIR/appdata/calibre:/config
+      - $DATADIR/downloads:/data/downloads
+      - $DATADIR/media:/data/media
+      - $DATA2DIR/share:/tank
+      - $DATA2DIR:/srv
+      - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - 5311:8080
+      - 5312:8181
+      - 5313:8081
     restart: unless-stopped
 
-  whoami:
-    image: containous/whoami
-    networks:
-       traf:
-         ipv4_address: 10.1.1.21
-    labels:
-        traefik.enable: true
-        traefik.http.routers.whoami.rule: Host(`whoami.YOURDOMAIN`)
-        traefik.http.routers.whoami.middlewares: authentik@docker
+  lazylibrarian:
+    <<: *common-keys-media
+    image: lscr.io/linuxserver/lazylibrarian:latest
+    container_name: lazylibrarian
+    environment:
+      <<: *default-tz-puid-pgid
+    volumes:
+      - $DOCKERDIR/appdata/lazylibrarian:/config
+      - $DOCKERDIR/logs/lazylibrarian:/logs
+      - $DATADIR/downloads:/data/downloads
+      - $DATADIR/media:/data/media
+      - $DATA2DIR/share:/tank
+      - $DATADIR/books:/data/books
+      - "/etc/localtime:/etc/localtime:ro"
+    ports:
+      - 5316:5299
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.lazylibrarian.rule=Host(\"librarian.$DOMAIN\")"
+      - "traefik.http.routers.lazylibrarian.middlewares=lazylibrarian-auth"
+      - "traefik.http.middlewares.lazylibrarian-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.lazylibrarian-auth.basicauth.realm=Hello!"
+
+  netbootxyz:
+    <<: *common-keys-media
+    image: ghcr.io/netbootxyz/netbootxyz
+    container_name: netbootxyz
+    environment:
+#      - MENU_VERSION=2.0.47 # optional
+      <<: *default-tz-puid-pgid
+    volumes:
+      - $DOCKERDIR/appdata/netboot/config:/config # optional
+      - $DOCKERDIR/appdata/netboot/assets:/assets # optional
+    ports:
+      - 3000:3000
+      - 69:69/udp
+      - 8181:80 #optional
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.netboot.rule=Host(\"netboot.$DOMAIN\")"
+      - "traefik.http.routers.netboot.middlewares=netboot-auth"
+      - "traefik.http.middlewares.netboot-auth.basicauth.usersFile=/config/users"
+      - "traefik.http.middlewares.netboot-auth.basicauth.realm=Hello!"
